@@ -17,8 +17,7 @@ endif()
 
 include_directories(
     "/" 
-    "D:/Mine/Code/RuZhouXieS/zuzhouxie-sequence/senluo/include"
-    "D:/Program Files/SDK/VulkanSDK/1.3.224.1/Include"
+    "D:/SDK/VulkanSDK/1.3.224.1/Include"
 )
 
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -30,6 +29,6 @@ foreach(srcfile IN LISTS benchmark_srcs)
     get_filename_component(elfname ${srcfile} NAME_WE)
     add_executable(${elfname} ${srcfile})
     target_link_libraries(${elfname}
-    "D:/Program Files/SDK/VulkanSDK/1.3.224.1/lib/vulkan-1.lib"
-    "D:/Program Files/SDK/glfw-3.3.8.bin.WIN64/lib-vc2022/glfw3.lib")
+    "D:/SDK/VulkanSDK/1.3.224.1/lib/vulkan-1.lib"
+    "D:/SDK/glfw-3.3.8.bin.WIN64/lib-vc2022/glfw3.lib")
 endforeach()
