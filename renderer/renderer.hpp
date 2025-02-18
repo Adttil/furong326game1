@@ -99,10 +99,14 @@ namespace adttil
 
             set_and_check(result, create_swapchain());
             OptianalGuard _{ result, [&]{ destroy_swapchain(); } };
+
+            set_and_check(result, create_render_pass());
+            OptianalGuard _{ result, [&]{ destroy_render_pass(); } };
         }
 
         ~Renderer() noexcept
         {
+            destroy_render_pass();
             destroy_swapchain();
             destroy_surface();
             destroy_descriptor_pool();
@@ -321,31 +325,45 @@ namespace adttil
             //     wd->Frames[i].Backbuffer = backbuffers[i];
         }
 
-        static VkPhysicalDevice select_physical_device(VkInstance instance)
+        VkResult create_render_pass()
         {
-            uint32_t gpu_count;
-            VkResult err = vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr);
-            check_vk_result(err);
-        
-            std::vector<VkPhysicalDevice> gpus(gpu_count);
-            err = vkEnumeratePhysicalDevices(instance, &gpu_count, gpus.data());
-            check_vk_result(err);
-        
-            // If a number >1 of GPUs got reported, find discrete GPU if present, or use first one available. This covers
-            // most common cases (multi-gpu/integrated+dedicated graphics). Handling more complicated setups (multiple
-            // dedicated GPUs) is out of scope of this sample.
-            for (VkPhysicalDevice& device : gpus)
-            {
-                VkPhysicalDeviceProperties properties;
-                vkGetPhysicalDeviceProperties(device, &properties);
-                if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-                    return device;
-            }
-        
-            // Use first GPU (Integrated) is a Discrete one is not available.
-            if (gpus.size() > 0)
-                return gpus[0];
-            return VK_NULL_HANDLE;
+            VkAttachmentDescription attachment = {};
+            attachment.format = surface_format_.format;
+            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = true ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            VkAttachmentReference color_attachment = {};
+            color_attachment.attachment = 0;
+            color_attachment.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            VkSubpassDescription subpass = {};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &color_attachment;
+            VkSubpassDependency dependency = {};
+            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+            dependency.dstSubpass = 0;
+            dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.srcAccessMask = 0;
+            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            VkRenderPassCreateInfo info = {};
+            info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            info.attachmentCount = 1;
+            info.pAttachments = &attachment;
+            info.subpassCount = 1;
+            info.pSubpasses = &subpass;
+            info.dependencyCount = 1;
+            info.pDependencies = &dependency;
+            return vkCreateRenderPass(device_, &info, allocator_, &render_pass_);
+        }
+
+        void destroy_render_pass() noexcept
+        {
+            vkDestroyRenderPass(device_, render_pass_, allocator_);
         }
 
         void destroy_swapchain() noexcept
@@ -378,7 +396,34 @@ namespace adttil
             result = new_value;
             check_vk_result(result);
         }
-
+        
+        static VkPhysicalDevice select_physical_device(VkInstance instance)
+        {
+            uint32_t gpu_count;
+            VkResult err = vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr);
+            check_vk_result(err);
+        
+            std::vector<VkPhysicalDevice> gpus(gpu_count);
+            err = vkEnumeratePhysicalDevices(instance, &gpu_count, gpus.data());
+            check_vk_result(err);
+        
+            // If a number >1 of GPUs got reported, find discrete GPU if present, or use first one available. This covers
+            // most common cases (multi-gpu/integrated+dedicated graphics). Handling more complicated setups (multiple
+            // dedicated GPUs) is out of scope of this sample.
+            for (VkPhysicalDevice& device : gpus)
+            {
+                VkPhysicalDeviceProperties properties;
+                vkGetPhysicalDeviceProperties(device, &properties);
+                if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+                    return device;
+            }
+        
+            // Use first GPU (Integrated) is a Discrete one is not available.
+            if (gpus.size() > 0)
+                return gpus[0];
+            return VK_NULL_HANDLE;
+        }
+        
         VkSurfaceFormatKHR select_surface_format() const
         {
             const VkFormat request_formats[] = { 
@@ -490,5 +535,7 @@ namespace adttil
         VkSwapchainKHR swapchain_;
         uint32_t image_count_;
         VkImage backbuffers_[16] = {};
+
+        VkRenderPass render_pass_;
     };
 }
