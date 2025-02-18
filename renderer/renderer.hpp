@@ -6,10 +6,13 @@
 #include <ranges>
 #include <algorithm>
 
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
+//#include "D:/Program Files/imgui-1.90.1/imgui.h"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
-//#include <imgui.h>
 
 namespace adttil
 {
@@ -102,10 +105,47 @@ namespace adttil
 
             set_and_check(result, create_render_pass());
             OptianalGuard _{ result, [&]{ destroy_render_pass(); } };
+
+            set_and_check(result, create_frames());
+            OptianalGuard _{ result, [&]{ destroy_frames(); } };
+
+            // Setup Dear ImGui context
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGuiIO& io = ImGui::GetIO(); (void)io;
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+            // // Setup Dear ImGui style
+             ImGui::StyleColorsDark();
+            // //ImGui::StyleColorsLight();
+
+            // Setup Platform/Renderer backends
+            ImGui_ImplGlfw_InitForVulkan(window_, true);
+            ImGui_ImplVulkan_InitInfo init_info = {};
+            init_info.Instance = instance_;
+            init_info.PhysicalDevice = physical_device_;
+            init_info.Device = device_;
+            init_info.QueueFamily = queue_family_;
+            init_info.Queue = queue_;
+            init_info.PipelineCache = nullptr;
+            init_info.DescriptorPool = descriptor_pool_;
+            init_info.Subpass = 0;
+            init_info.MinImageCount = 2;
+            init_info.ImageCount = image_count_;
+            init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+            init_info.Allocator = allocator_;
+            init_info.CheckVkResultFn = check_vk_result;
+            ImGui_ImplVulkan_Init(&init_info, render_pass_);
         }
 
         ~Renderer() noexcept
         {
+            ImGui_ImplVulkan_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+
+            destroy_frames();
             destroy_render_pass();
             destroy_swapchain();
             destroy_surface();
@@ -128,6 +168,17 @@ namespace adttil
         }
 
     private:
+        struct Frame
+        {
+            VkImageView     backbuffer_view;
+            VkFramebuffer   framebuffer;
+            VkCommandPool   command_pool;
+            VkCommandBuffer command_buffer;
+            VkFence         fence;
+            
+
+        };
+
 
         VkResult create_instance()
         {
@@ -361,6 +412,87 @@ namespace adttil
             return vkCreateRenderPass(device_, &info, allocator_, &render_pass_);
         }
 
+        VkResult create_frames()
+        {
+            VkResult result = VK_SUCCESS;
+            OptianalGuard _{ result, [&]{ destroy_frames(); } };
+
+            VkImageViewCreateInfo view_info = {};
+            view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view_info.format = surface_format_.format;
+            view_info.components.r = VK_COMPONENT_SWIZZLE_R;
+            view_info.components.g = VK_COMPONENT_SWIZZLE_G;
+            view_info.components.b = VK_COMPONENT_SWIZZLE_B;
+            view_info.components.a = VK_COMPONENT_SWIZZLE_A;
+            VkImageSubresourceRange image_range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            view_info.subresourceRange = image_range;
+
+            VkFramebufferCreateInfo buff_info = {};
+            buff_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            buff_info.renderPass = render_pass_;
+            buff_info.attachmentCount = 1;
+            buff_info.width = width_;
+            buff_info.height = height_;
+            buff_info.layers = 1;
+
+            frames_.reserve(image_count_);
+            for(const VkImage backbuffer :  backbuffers_ | std::views::take(image_count_))
+            {
+                Frame frame;
+                view_info.image = backbuffer;
+                set_and_check(result, vkCreateImageView(device_, &view_info, allocator_, &frame.backbuffer_view));
+                OptianalGuard _{ result, [&]{ vkDestroyImageView(device_, frame.backbuffer_view, allocator_); } };
+
+                buff_info.pAttachments = &frame.backbuffer_view;
+                set_and_check(result, vkCreateFramebuffer(device_, &buff_info, allocator_, &frame.framebuffer));
+                OptianalGuard _{ result, [&]{ vkDestroyFramebuffer(device_, frame.framebuffer, allocator_); } };
+
+                {
+                    VkCommandPoolCreateInfo info = {};
+                    info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+                    info.flags = 0;
+                    info.queueFamilyIndex = queue_family_;
+                    set_and_check(result, vkCreateCommandPool(device_, &info, allocator_, &frame.command_pool));
+                }
+                OptianalGuard _{ result, [&]{ vkDestroyCommandPool(device_, frame.command_pool, allocator_); } };
+
+                {
+                    VkCommandBufferAllocateInfo info = {};
+                    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    info.commandPool = frame.command_pool;
+                    info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    info.commandBufferCount = 1;
+                    set_and_check(result, vkAllocateCommandBuffers(device_, &info, &frame.command_buffer));
+                }
+                OptianalGuard _{ result, [&]{ vkFreeCommandBuffers(device_, frame.command_pool, 1, &frame.command_buffer); } };
+
+                {
+                    VkFenceCreateInfo info = {};
+                    info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+                    info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+                    set_and_check(result, vkCreateFence(device_, &info, allocator_, &frame.fence));
+                }
+                OptianalGuard _{ result, [&]{ vkDestroyFence(device_, frame.fence, allocator_); } };
+
+                frames_.push_back(frame);
+            }
+
+            return result;
+        }
+
+        void destroy_frames() noexcept
+        {
+            for(const auto[img_view, frame_buff, cmd_pool, cmd_buff, fence] : frames_)
+            {
+                vkDestroyFence(device_, fence, allocator_);
+                vkFreeCommandBuffers(device_, cmd_pool, 1, &cmd_buff);
+                vkDestroyCommandPool(device_, cmd_pool, allocator_);
+                vkDestroyFramebuffer(device_, frame_buff, allocator_);
+                vkDestroyImageView(device_, img_view, allocator_);
+            }
+        }
+
         void destroy_render_pass() noexcept
         {
             vkDestroyRenderPass(device_, render_pass_, allocator_);
@@ -537,5 +669,7 @@ namespace adttil
         VkImage backbuffers_[16] = {};
 
         VkRenderPass render_pass_;
+
+        std::vector<Frame> frames_;
     };
 }
