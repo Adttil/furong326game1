@@ -141,6 +141,8 @@ namespace adttil
 
         ~Renderer() noexcept
         {
+            vkDeviceWaitIdle(device_);
+
             ImGui_ImplVulkan_Shutdown();
             ImGui_ImplGlfw_Shutdown();
             ImGui::DestroyContext();
@@ -167,6 +169,107 @@ namespace adttil
             glfwPollEvents();
         }
 
+        void new_frame() const
+        {
+            ImGui_ImplVulkan_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+        }
+
+        void frame_render(ImVec4 clear_color)
+        {
+            ImGui::Render();
+            ImDrawData* draw_data = ImGui::GetDrawData();
+
+            VkResult err;
+        
+            VkSemaphore image_acquired_semaphore  = frames_[semaphore_index_].image_acquired_semaphore;
+            VkSemaphore render_complete_semaphore = frames_[semaphore_index_].render_complete_semaphore;
+            err = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &frame_index_);
+            if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
+            {
+                //g_SwapChainRebuild = true;
+                return;
+            }
+            check_vk_result(err);
+        
+            auto& fd = frames_[frame_index_];
+            {
+                err = vkWaitForFences(device_, 1, &fd.fence, VK_TRUE, UINT64_MAX);    // wait indefinitely instead of periodically checking
+                check_vk_result(err);
+            
+                err = vkResetFences(device_, 1, &fd.fence);
+                check_vk_result(err);
+            }
+            {
+                err = vkResetCommandPool(device_, fd.command_pool, 0);
+                check_vk_result(err);
+                VkCommandBufferBeginInfo info = {};
+                info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                err = vkBeginCommandBuffer(fd.command_buffer, &info);
+                check_vk_result(err);
+            }
+            {
+                VkRenderPassBeginInfo info = {};
+                info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                info.renderPass = render_pass_;
+                info.framebuffer = fd.framebuffer;
+                info.renderArea.extent.width = width_;
+                info.renderArea.extent.height = height_;
+                info.clearValueCount = 1;
+
+                VkClearValue clear_value = {};
+                clear_value.color.float32[0] = clear_color.x * clear_color.w;
+                clear_value.color.float32[1] = clear_color.y * clear_color.w;
+                clear_value.color.float32[2] = clear_color.z * clear_color.w;
+                clear_value.color.float32[3] = clear_color.w;
+                info.pClearValues = &clear_value;
+
+                vkCmdBeginRenderPass(fd.command_buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+            }
+        
+            // Record dear imgui primitives into command buffer
+            ImGui_ImplVulkan_RenderDrawData(draw_data, fd.command_buffer);
+        
+            // Submit command buffer
+            vkCmdEndRenderPass(fd.command_buffer);
+            {
+                VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                VkSubmitInfo info = {};
+                info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                info.waitSemaphoreCount = 1;
+                info.pWaitSemaphores = &image_acquired_semaphore;
+                info.pWaitDstStageMask = &wait_stage;
+                info.commandBufferCount = 1;
+                info.pCommandBuffers = &fd.command_buffer;
+                info.signalSemaphoreCount = 1;
+                info.pSignalSemaphores = &render_complete_semaphore;
+            
+                err = vkEndCommandBuffer(fd.command_buffer);
+                check_vk_result(err);
+                err = vkQueueSubmit(queue_, 1, &info, fd.fence);
+                check_vk_result(err);
+            }
+
+            //present
+            VkPresentInfoKHR info = {};
+            info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            info.waitSemaphoreCount = 1;
+            info.pWaitSemaphores = &render_complete_semaphore;
+            info.swapchainCount = 1;
+            info.pSwapchains = &swapchain_;
+            info.pImageIndices = &frame_index_;
+            err = vkQueuePresentKHR(queue_, &info);
+            if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
+            {
+                //g_SwapChainRebuild = true;
+                return;
+            }
+            check_vk_result(err);
+            semaphore_index_ = (semaphore_index_ + 1) % image_count_; // Now we can use the next set of semaphores
+        }
+
     private:
         struct Frame
         {
@@ -176,7 +279,8 @@ namespace adttil
             VkCommandBuffer command_buffer;
             VkFence         fence;
             
-
+            VkSemaphore     image_acquired_semaphore;
+            VkSemaphore     render_complete_semaphore;
         };
 
 
@@ -435,7 +539,10 @@ namespace adttil
             buff_info.width = width_;
             buff_info.height = height_;
             buff_info.layers = 1;
-
+            
+            VkSemaphoreCreateInfo sem_info = {};
+            sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            
             frames_.reserve(image_count_);
             for(const VkImage backbuffer :  backbuffers_ | std::views::take(image_count_))
             {
@@ -475,6 +582,11 @@ namespace adttil
                 }
                 OptianalGuard _{ result, [&]{ vkDestroyFence(device_, frame.fence, allocator_); } };
 
+                set_and_check(result, vkCreateSemaphore(device_, &sem_info, allocator_, &frame.image_acquired_semaphore));
+                OptianalGuard _{ result, [&]{ vkDestroySemaphore(device_, frame.image_acquired_semaphore, allocator_); } };
+
+                set_and_check(result, vkCreateSemaphore(device_, &sem_info, allocator_, &frame.render_complete_semaphore));
+
                 frames_.push_back(frame);
             }
 
@@ -483,8 +595,10 @@ namespace adttil
 
         void destroy_frames() noexcept
         {
-            for(const auto[img_view, frame_buff, cmd_pool, cmd_buff, fence] : frames_)
+            for(const auto[img_view, frame_buff, cmd_pool, cmd_buff, fence, img_acq, rnd_cpl] : frames_)
             {
+                vkDestroySemaphore(device_, rnd_cpl, allocator_);
+                vkDestroySemaphore(device_, img_acq, allocator_);
                 vkDestroyFence(device_, fence, allocator_);
                 vkFreeCommandBuffers(device_, cmd_pool, 1, &cmd_buff);
                 vkDestroyCommandPool(device_, cmd_pool, allocator_);
@@ -671,5 +785,7 @@ namespace adttil
         VkRenderPass render_pass_;
 
         std::vector<Frame> frames_;
+        uint32_t frame_index_ = 0;
+        uint32_t semaphore_index_ = 0;
     };
 }
