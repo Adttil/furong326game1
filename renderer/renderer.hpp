@@ -5,17 +5,34 @@
 #include <span>
 #include <ranges>
 #include <algorithm>
+#include <filesystem>
+#include <iostream>
+#include <string>
+
+#include <3rd party/stb_image/stb_image.h>
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
-//#include "D:/Program Files/imgui-1.90.1/imgui.h"
+#define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+#include <senluo/geo.hpp>
+
 namespace adttil
 {
+    using Vec2 = senluo::geo::vec<2>;
+    using Vec3 = senluo::geo::vec<3>;
+    using Vec4 = senluo::geo::vec<4>;
+
+    using Coord2 = senluo::geo::vec<2, size_t>;
+    using Coord3 = senluo::geo::vec<3, size_t>;
+    using Coord4 = senluo::geo::vec<4, size_t>;
+
+    using Color32 = senluo::geo::vec<4, unsigned char>;
+
     inline void glfw_error_callback(int error, const char* description)
     {
         std::println(stderr, "GLFW Error {}: {}", error, description);
@@ -787,5 +804,125 @@ namespace adttil
         std::vector<Frame> frames_;
         uint32_t frame_index_ = 0;
         uint32_t semaphore_index_ = 0;
+    };
+
+    class BitmapView
+    {
+    public:
+        constexpr BitmapView(Color32* data, Coord2 size, size_t row_align) noexcept
+        : data_{ data }
+        , size_{ size }
+        , row_align_{ row_align }
+        {}
+
+        constexpr BitmapView(Color32* data, Coord2 size) noexcept
+        : BitmapView{ data, size, size.x() }
+        {}
+
+        constexpr Color32* data()const noexcept
+        {
+            return data_;
+        }
+
+        constexpr Coord2 size()const noexcept
+        {
+            return size_;
+        }
+
+        constexpr size_t width()const noexcept
+        {
+            return size_.x();
+        }
+
+        constexpr size_t height()const noexcept
+        {
+            return size_.y();
+        }
+
+        constexpr size_t count()const noexcept
+        {
+            return width() * height();
+        }
+
+        constexpr size_t row_align()const noexcept
+        {
+            return row_align_;
+        }
+
+        constexpr Color32& operator[](size_t i)const noexcept
+        {
+            return data_[i % row_align_ + i / row_align_ * row_align_];
+        }
+
+        constexpr Color32& operator[](Coord2 coord)const noexcept
+        {
+            return data_[coord.x() + coord.y() * row_align_];
+        }
+
+        friend void copy(BitmapView dst, BitmapView src)
+        {
+            for(size_t i : std::views::iota(0uz, dst.height()))
+            {
+                memcpy(dst.row(i), src.row(i), dst.width() * sizeof(Color32));
+            }
+        }
+
+    private:
+        constexpr Color32* row(size_t i) const noexcept
+        {
+            return &data_[row_align_ * i];
+        }
+
+        Color32* data_;
+        Coord2 size_;
+        size_t row_align_;
+    };
+
+    class AnimManager
+    {
+    public:
+        AnimManager(const char* anim_folder_path)
+        {
+            namespace fs = std::filesystem;
+
+            auto files = fs::directory_iterator(anim_folder_path)
+                        | std::views::filter([](auto& file){ return file.path().extension() == ".png" ;})
+                        | std::views::transform([](auto& file){ return file.path().string(); })
+                        | std::ranges::to<std::vector>();
+
+            uint32_t width = 0;
+            uint32_t height = 0;
+            for (const auto& file : files) 
+            {
+                int w, h, c;
+                if(not stbi_info(file.c_str(), &w, &h, &c))
+                {
+                    continue;
+                }
+                width = std::max(width, (uint32_t)w);
+                height += h;
+            }
+
+            std::vector<Color32> textures_data(width * height);
+            uint32_t offset = 0;
+            for (const auto& file : files) 
+            {
+                int w, h, c;
+                auto pixels = (Color32*)stbi_load(file.c_str(), &w, &h, &c, 4);
+                if(not pixels)
+                {
+                    continue;
+                }
+                Coord2 size{ (size_t)w, (size_t)h };
+                copy(BitmapView{ textures_data.data() + offset, size, width }, BitmapView{ pixels, size });
+                offset += size.y() * width;
+            }
+
+
+        }
+
+    private:
+        std::unordered_map<std::string, uint32_t> textures;
+        
     };
 }
