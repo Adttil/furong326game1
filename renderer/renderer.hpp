@@ -9,11 +9,11 @@
 #include <iostream>
 #include <string>
 
-#include <3rd party/stb_image/stb_image.h>
+#include <stb_image/stb_image.h>
 
-#include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_vulkan.h>
+#include <imgui/imgui.h>
+#include <imgui/imgui_impl_glfw.h>
+#include <imgui/imgui_impl_vulkan.h>
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -923,6 +923,6 @@ namespace adttil
 
     private:
         std::unordered_map<std::string, uint32_t> textures;
-        
+
     };
 }
